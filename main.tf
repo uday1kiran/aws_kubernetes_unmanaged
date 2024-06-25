@@ -197,7 +197,44 @@ resource "aws_volume_attachment" "kubernetes" {
   instance_id = aws_instance.kubernetes[count.index].id
 }
 
+resource "null_resource" "kubernetes_setup_prereq" {
+  count = 3
+
+  connection {
+    type                = "ssh"
+    user                = "ubuntu"
+    host                = aws_instance.kubernetes[count.index].private_ip
+    private_key         = file("uday1.pem")
+    bastion_host        = aws_instance.jumpbox.public_ip
+    bastion_user        = "ubuntu"
+    bastion_private_key = file("uday1.pem")
+  }
+
+  provisioner "remote-exec" {
+      inline = [
+      "sudo apt-get -y update",
+      "sudo apt-get install -y curl gnupg2 software-properties-common apt-transport-https ca-certificates",
+      "sudo swapoff -a",
+      "sudo sed -i '/ swap / s/^\\(.*\\)$/#\\1/g' /etc/fstab",
+      "sudo modprobe overlay",
+      "sudo modprobe br_netfilter",
+      "sudo sysctl --system",
+      "sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmour -o /etc/apt/trusted.gpg.d/containerd.gpg",
+      "sudo add-apt-repository \"deb [arch=amd64] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable\"",
+      "sudo apt update && sudo apt install containerd.io -y",
+      "containerd config default | sudo tee /etc/containerd/config.toml >/dev/null 2>&1",
+      "sudo sed -i 's/SystemdCgroup = false/SystemdCgroup = true/g' /etc/containerd/config.toml",
+      "sudo systemctl restart containerd",
+      "curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.30/deb/Release.key | sudo gpg --dearmor -o /etc/apt/keyrings/k8s.gpg",
+      "echo 'deb [signed-by=/etc/apt/keyrings/k8s.gpg] https://pkgs.k8s.io/core:/stable:/v1.30/deb/ /' | sudo tee /etc/apt/sources.list.d/k8s.list",
+      "sudo apt update -y",
+      "sudo apt install kubelet kubeadm kubectl -y"
+    ]
+  }
+}
+
 resource "null_resource" "kubernetes_setup" {
+  depends_on = [null_resource.kubernetes_setup_prereq]
   count = 3
 
   connection {
