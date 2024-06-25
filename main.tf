@@ -211,26 +211,26 @@ resource "null_resource" "kubernetes_setup_prereq" {
   }
 
   provisioner "remote-exec" {
-      inline = [
+          inline = [
       "sudo apt-get -y update",
       "sudo apt-get install -y curl gnupg2 software-properties-common apt-transport-https ca-certificates",
       "sudo swapoff -a",
       "sudo sed -i '/ swap / s/^\\(.*\\)$/#\\1/g' /etc/fstab",
-      "sudo modprobe overlay",
-      "sudo modprobe br_netfilter",
       "sudo tee /etc/modules-load.d/k8s.conf <<EOF\noverlay\nbr_netfilter\nEOF",
       "sudo tee /etc/sysctl.d/kubernetes.conf <<EOT\nnet.bridge.bridge-nf-call-ip6tables = 1\nnet.bridge.bridge-nf-call-iptables = 1\nnet.ipv4.ip_forward = 1\nEOT",
+      "sudo modprobe overlay",
+      "sudo modprobe br_netfilter",
       "sudo sysctl --system",
-      "sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmour -o /etc/apt/trusted.gpg.d/containerd.gpg -y",
-      "sudo add-apt-repository \"deb [arch=amd64] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable\" -y",
-      "sudo apt update && sudo apt install containerd.io -y",
+      "sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmour -o /etc/apt/trusted.gpg.d/containerd.gpg",
+      "sudo add-apt-repository -y \"deb [arch=amd64] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable\"",
+      "sudo apt-get update && sudo apt-get install -y containerd.io",
       "containerd config default | sudo tee /etc/containerd/config.toml >/dev/null 2>&1",
       "sudo sed -i 's/SystemdCgroup = false/SystemdCgroup = true/g' /etc/containerd/config.toml",
       "sudo systemctl restart containerd",
-      "curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.30/deb/Release.key | sudo gpg --dearmor -o /etc/apt/keyrings/k8s.gpg",
+      "sudo curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.30/deb/Release.key | sudo gpg --dearmor -o /etc/apt/keyrings/k8s.gpg",
       "echo 'deb [signed-by=/etc/apt/keyrings/k8s.gpg] https://pkgs.k8s.io/core:/stable:/v1.30/deb/ /' | sudo tee /etc/apt/sources.list.d/k8s.list",
-      "sudo apt update -y",
-      "sudo apt install kubelet kubeadm kubectl -y"
+      "sudo apt-get update",
+      "sudo apt-get install -y kubelet kubeadm kubectl"
     ]
   }
 }
@@ -308,13 +308,35 @@ resource "null_resource" "kubernetes_join" {
 
   provisioner "remote-exec" {
     inline = [
-      "sudo $(ssh -i uday1.pem ubuntu@${aws_instance.kubernetes[0].private_ip} 'kubeadm token create --print-join-command')",
+      "sudo $(ssh -i /home/ubuntu/uday1.pem ubuntu@${aws_instance.kubernetes[0].private_ip} 'kubeadm token create --print-join-command')",
+    ]
+  }
+}
+
+resource "null_resource" "copy_ssh_key" {
+  depends_on = [aws_instance.jumpbox, null_resource.kubernetes_init]
+
+  connection {
+    type        = "ssh"
+    user        = "ubuntu"
+    host        = aws_instance.jumpbox.public_ip
+    private_key = file("uday1.pem")
+  }
+
+  provisioner "file" {
+    source      = "uday1.pem"
+    destination = "/home/ubuntu/.ssh/uday1.pem"
+  }
+
+  provisioner "remote-exec" {
+    inline = [
+      "chmod 400 ~/.ssh/uday1.pem",
     ]
   }
 }
 
 resource "null_resource" "jumpbox_setup" {
-  depends_on = [aws_instance.jumpbox, null_resource.kubernetes_init]
+  depends_on = [null_resource.copy_ssh_key]
 
   connection {
     type        = "ssh"
@@ -348,7 +370,7 @@ resource "null_resource" "copy_kubeconfig" {
 
   provisioner "remote-exec" {
     inline = [
-      "scp -o StrictHostKeyChecking=no -i uday1.pem ubuntu@${aws_instance.kubernetes[0].private_ip}:.kube/config ~/.kube/config",
+      "scp -o StrictHostKeyChecking=no -i /home/ubuntu/.ssh/uday1.pem ubuntu@${aws_instance.kubernetes[0].private_ip}:.kube/config ~/.kube/config",
       "sed -i 's/https:\\/\\/.*:/https:\\/\\/${aws_instance.kubernetes[0].private_ip}:/g' ~/.kube/config",
     ]
   }
