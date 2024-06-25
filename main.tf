@@ -113,7 +113,7 @@ resource "aws_security_group" "jumpbox" {
     from_port   = 22
     to_port     = 22
     protocol    = "tcp"
-    cidr_blocks = ["157.46.90.139/32"]
+    cidr_blocks = ["152.58.221.76/32"]
   }
 
   egress {
@@ -154,6 +154,7 @@ resource "aws_security_group" "kubernetes" {
 }
 
 resource "aws_instance" "jumpbox" {
+  depends_on = [aws_internet_gateway.main]
   ami           = data.aws_ami.ubuntu_24_04.id
   instance_type = "t2.micro"
   key_name      = "uday1"
@@ -292,9 +293,33 @@ resource "null_resource" "kubernetes_init" {
   }
 }
 
+# resource "null_resource" "wait_for_jumpbox" {
+#   depends_on = [aws_instance.jumpbox]
+
+#   provisioner "local-exec" {
+#     command = <<-EOT
+#       #!/bin/bash
+#       echo "Waiting for 60 seconds before attempting to connect..."
+#       sleep 60
+#       for i in {1..30}; do
+#         echo "Attempt $i to connect to jumpbox..."
+#         if ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 -i uday1.pem ubuntu@${aws_instance.jumpbox.public_ip} echo 'Jumpbox is ready'; then
+#           echo "Successfully connected to jumpbox"
+#           exit 0
+#         fi
+#         echo "Failed to connect, retrying in 10 seconds..."
+#         sleep 10
+#       done
+#       echo "Failed to connect to jumpbox after 30 attempts"
+#       exit 1
+#     EOT
+#     interpreter = ["/bin/bash", "-c"]
+#   }
+# }
+
 resource "null_resource" "kubernetes_join" {
   count      = 2
-  depends_on = [null_resource.kubernetes_init]
+  depends_on = [null_resource.kubernetes_init, aws_instance.jumpbox] #, null_resource.wait_for_jumpbox]
 
   connection {
     type                = "ssh"
@@ -304,39 +329,23 @@ resource "null_resource" "kubernetes_join" {
     bastion_host        = aws_instance.jumpbox.public_ip
     bastion_user        = "ubuntu"
     bastion_private_key = file("uday1.pem")
+    agent = true
   }
 
   provisioner "remote-exec" {
     inline = [
-      "sudo $(ssh -i /home/ubuntu/uday1.pem ubuntu@${aws_instance.kubernetes[0].private_ip} 'kubeadm token create --print-join-command')",
+      #"sudo $(ssh -i /home/ubuntu/uday1.pem ubuntu@${aws_instance.kubernetes[0].private_ip} 'kubeadm token create --print-join-command')",
+      "ssh-keyscan -H ${aws_instance.kubernetes[0].private_ip} >> ~/.ssh/known_hosts",
+      "join_command=$(ssh -o StrictHostKeyChecking=no -i ~/.ssh/uday1.pem ubuntu@${aws_instance.kubernetes[0].private_ip} 'sudo kubeadm token create --print-join-command')",
+      "echo $join_command",
+      "sudo $join_command",
     ]
   }
 }
 
-resource "null_resource" "copy_ssh_key" {
-  depends_on = [aws_instance.jumpbox, null_resource.kubernetes_init]
-
-  connection {
-    type        = "ssh"
-    user        = "ubuntu"
-    host        = aws_instance.jumpbox.public_ip
-    private_key = file("uday1.pem")
-  }
-
-  provisioner "file" {
-    source      = "uday1.pem"
-    destination = "/home/ubuntu/.ssh/uday1.pem"
-  }
-
-  provisioner "remote-exec" {
-    inline = [
-      "chmod 400 ~/.ssh/uday1.pem",
-    ]
-  }
-}
 
 resource "null_resource" "jumpbox_setup" {
-  depends_on = [null_resource.copy_ssh_key]
+  depends_on = [aws_instance.jumpbox, null_resource.kubernetes_init]
 
   connection {
     type        = "ssh"
@@ -359,18 +368,20 @@ resource "null_resource" "jumpbox_setup" {
 }
 
 resource "null_resource" "copy_kubeconfig" {
-  depends_on = [null_resource.jumpbox_setup, null_resource.kubernetes_init]
+  depends_on = [null_resource.jumpbox_setup]
 
   connection {
     type        = "ssh"
     user        = "ubuntu"
     host        = aws_instance.jumpbox.public_ip
     private_key = file("uday1.pem")
+    agent       = true
   }
 
   provisioner "remote-exec" {
     inline = [
-      "scp -o StrictHostKeyChecking=no -i /home/ubuntu/.ssh/uday1.pem ubuntu@${aws_instance.kubernetes[0].private_ip}:.kube/config ~/.kube/config",
+      "ssh-keyscan -H ${aws_instance.kubernetes[0].private_ip} >> ~/.ssh/known_hosts",
+      "scp -o StrictHostKeyChecking=no ubuntu@${aws_instance.kubernetes[0].private_ip}:.kube/config ~/.kube/config",
       "sed -i 's/https:\\/\\/.*:/https:\\/\\/${aws_instance.kubernetes[0].private_ip}:/g' ~/.kube/config",
     ]
   }
