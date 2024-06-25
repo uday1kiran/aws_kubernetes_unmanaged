@@ -4,18 +4,20 @@ provider "aws" {
 
 data "aws_ami" "ubuntu_24_04" {
   most_recent = true
-  owners      = ["099720109477"] # Canonical
 
   filter {
     name   = "name"
-    values = ["ubuntu/images/hvm-ssd/ubuntu-noble-24.04-amd64-server-*"]
+    values = ["ubuntu/images/hvm-ssd*/ubuntu-*-24.04-amd64-server-*"]
   }
 
   filter {
     name   = "virtualization-type"
     values = ["hvm"]
   }
+
+  owners = ["099720109477"]
 }
+
 
 resource "aws_vpc" "main" {
   cidr_block           = "10.0.0.0/16"
@@ -202,10 +204,10 @@ resource "null_resource" "kubernetes_setup" {
     type                = "ssh"
     user                = "ubuntu"
     host                = aws_instance.kubernetes[count.index].private_ip
-    private_key         = file("~/.ssh/uday1.pem")
+    private_key         = file("uday1.pem")
     bastion_host        = aws_instance.jumpbox.public_ip
     bastion_user        = "ubuntu"
-    bastion_private_key = file("~/.ssh/uday1.pem")
+    bastion_private_key = file("uday1.pem")
   }
 
   provisioner "remote-exec" {
@@ -234,10 +236,10 @@ resource "null_resource" "kubernetes_init" {
     type                = "ssh"
     user                = "ubuntu"
     host                = aws_instance.kubernetes[0].private_ip
-    private_key         = file("~/.ssh/uday1.pem")
+    private_key         = file("uday1.pem")
     bastion_host        = aws_instance.jumpbox.public_ip
     bastion_user        = "ubuntu"
-    bastion_private_key = file("~/.ssh/uday1.pem")
+    bastion_private_key = file("uday1.pem")
   }
 
   provisioner "remote-exec" {
@@ -259,15 +261,56 @@ resource "null_resource" "kubernetes_join" {
     type                = "ssh"
     user                = "ubuntu"
     host                = aws_instance.kubernetes[count.index + 1].private_ip
-    private_key         = file("~/.ssh/uday1.pem")
+    private_key         = file("uday1.pem")
     bastion_host        = aws_instance.jumpbox.public_ip
     bastion_user        = "ubuntu"
-    bastion_private_key = file("~/.ssh/uday1.pem")
+    bastion_private_key = file("uday1.pem")
   }
 
   provisioner "remote-exec" {
     inline = [
-      "sudo $(ssh -i ~/.ssh/uday1.pem ubuntu@${aws_instance.kubernetes[0].private_ip} 'kubeadm token create --print-join-command')",
+      "sudo $(ssh -i uday1.pem ubuntu@${aws_instance.kubernetes[0].private_ip} 'kubeadm token create --print-join-command')",
+    ]
+  }
+}
+
+resource "null_resource" "jumpbox_setup" {
+  depends_on = [aws_instance.jumpbox, null_resource.kubernetes_init]
+
+  connection {
+    type        = "ssh"
+    user        = "ubuntu"
+    host        = aws_instance.jumpbox.public_ip
+    private_key = file("uday1.pem")
+  }
+
+  provisioner "remote-exec" {
+    inline = [
+      "sudo apt-get update",
+      "sudo apt-get install -y apt-transport-https ca-certificates curl",
+      "curl -s https://packages.cloud.google.com/apt/doc/apt-key.gpg | sudo apt-key add -",
+      "echo \"deb https://apt.kubernetes.io/ kubernetes-xenial main\" | sudo tee /etc/apt/sources.list.d/kubernetes.list",
+      "sudo apt-get update",
+      "sudo apt-get install -y kubectl",
+      "mkdir -p $HOME/.kube",
+    ]
+  }
+}
+
+resource "null_resource" "copy_kubeconfig" {
+  depends_on = [null_resource.jumpbox_setup, null_resource.kubernetes_init]
+
+  connection {
+    type        = "ssh"
+    user        = "ubuntu"
+    host        = aws_instance.jumpbox.public_ip
+    private_key = file("uday1.pem")
+  }
+
+  provisioner "remote-exec" {
+    inline = [
+      "scp -o StrictHostKeyChecking=no -i uday1.pem ubuntu@${aws_instance.kubernetes[0].private_ip}:.kube/config ~/.kube/config",
+      "sed -i 's/https:\\/\\/.*:/https:\\/\\/${aws_instance.kubernetes[0].private_ip}:/g' ~/.kube/config",
     ]
   }
 }
